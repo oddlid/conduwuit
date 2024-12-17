@@ -404,7 +404,7 @@ impl Service {
 			.state_accessor
 			.room_state_get_content(&pdu.room_id, &StateEventType::RoomPowerLevels, "")
 			.await
-			.map_err(|_| err!(Database("invalid m.room.power_levels event")))
+			.map_err(|e| err!(Database("invalid m.room.power_levels event in database: {e}")))
 			.unwrap_or_default();
 
 		let sync_pdu = pdu.to_sync_room_event();
@@ -414,7 +414,14 @@ impl Service {
 			.state_cache
 			.active_local_users_in_room(&pdu.room_id)
 			// Don't notify the sender of their own events
-			.ready_filter(|user| user != &pdu.sender)
+			.ready_filter(|target_user| target_user != &pdu.sender)
+			// don't notify other users of an event if they ignored said user from the event
+			.filter_map(|target_user| async move {
+				(!self
+				.services
+				.users
+				.user_is_ignored(&pdu.sender, target_user).await).then_some(target_user)
+			})
 			.map(ToOwned::to_owned)
 			.collect()
 			.await;
@@ -426,7 +433,13 @@ impl Service {
 			if let Some(state_key) = &pdu.state_key {
 				let target_user_id = UserId::parse(state_key.clone())?;
 
-				if self.services.users.is_active_local(&target_user_id).await {
+				if self.services.users.is_active_local(&target_user_id).await
+					&& !self
+						.services
+						.users
+						.user_is_ignored(&pdu.sender, &target_user_id)
+						.await
+				{
 					push_target.insert(target_user_id);
 				}
 			}
