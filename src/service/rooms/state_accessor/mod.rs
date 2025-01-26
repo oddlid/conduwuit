@@ -17,7 +17,7 @@ use conduwuit::{
 	Err, Error, PduEvent, Result,
 };
 use database::{Deserialized, Map};
-use futures::{FutureExt, StreamExt, TryFutureExt};
+use futures::{future::try_join, FutureExt, StreamExt, TryFutureExt};
 use lru_cache::LruCache;
 use ruma::{
 	events::{
@@ -235,21 +235,16 @@ impl Service {
 		Id: for<'de> Deserialize<'de> + Sized + ToOwned,
 		<Id as ToOwned>::Owned: Borrow<EventId>,
 	{
-		let shortstatekey = self
-			.services
-			.short
-			.get_shortstatekey(event_type, state_key)
-			.await?;
+		let shortstatekey = self.services.short.get_shortstatekey(event_type, state_key);
 
 		let full_state = self
 			.services
 			.state_compressor
 			.load_shortstatehash_info(shortstatehash)
-			.await
-			.map_err(|e| err!(Database(error!(?event_type, ?state_key, "Missing state: {e:?}"))))?
-			.pop()
-			.expect("there is always one layer")
-			.full_state;
+			.map_ok(|mut vec| vec.pop().expect("there is always one layer").full_state)
+			.map_err(|e| err!(Database(error!(?event_type, ?state_key, "Missing state: {e:?}"))));
+
+		let (shortstatekey, full_state) = try_join(shortstatekey, full_state).await?;
 
 		let compressed = full_state
 			.iter()
